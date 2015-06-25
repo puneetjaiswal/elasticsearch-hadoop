@@ -37,9 +37,9 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Suite;
 
 @RunWith(Suite.class)
-@Suite.SuiteClasses({ AbstractHiveSaveTest.class, AbstractHiveSaveJsonTest.class, AbstractHiveSearchTest.class, AbstractHiveSearchJsonTest.class, AbstractHiveExtraTests.class})
+//@Suite.SuiteClasses({ AbstractHiveSaveTest.class, AbstractHiveSaveJsonTest.class, AbstractHiveSearchTest.class, AbstractHiveSearchJsonTest.class, AbstractHiveExtraTests.class})
 //@Suite.SuiteClasses({ AbstractHiveSaveJsonTest.class, AbstractHiveSearchJsonTest.class })
-//@Suite.SuiteClasses({ AbstractHiveSaveTest.class })
+@Suite.SuiteClasses({ AbstractHiveExtraTests.class })
 public class HiveSuite {
 
     static HiveInstance server;
@@ -78,7 +78,7 @@ public class HiveSuite {
             String hive = props.getProperty("hive", "local");
 
             isLocal = "local".equals(hive);
-            server = (isLocal ? new HiveEmbeddedServer(props) : new HiveJdbc(hive));
+            server = (isLocal ? new HiveEmbeddedServer2(props) : new HiveJdbc(hive));
             server.start();
 
             server.execute(cleanDdl);
@@ -159,8 +159,8 @@ public class HiveSuite {
     }
 
     public static void after() throws Exception {
-        if (server instanceof HiveEmbeddedServer) {
-            ((HiveEmbeddedServer) server).removeESSettings();
+        if (server instanceof HiveEmbeddedServer2) {
+            ((HiveEmbeddedServer2) server).removeESSettings();
         }
     }
 

@@ -23,13 +23,16 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.util.BitSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.elasticsearch.hadoop.EsHadoopException;
 import org.elasticsearch.hadoop.EsHadoopIllegalStateException;
+import org.elasticsearch.hadoop.cfg.ConfigurationOptions;
 import org.elasticsearch.hadoop.cfg.Settings;
 import org.elasticsearch.hadoop.rest.stats.Stats;
 import org.elasticsearch.hadoop.rest.stats.StatsAware;
@@ -204,13 +207,12 @@ public class RestRepository implements Closeable, StatsAware {
             // double check data - it might be a false flush (called on clean-up)
             if (data.length() > 0) {
                 bulkResult = client.bulk(resourceW, data);
+                executedBulkWrite = true;
             }
         } catch (EsHadoopException ex) {
             hadWriteErrors = true;
             throw ex;
         }
-
-        executedBulkWrite = true;
 
         // discard the data buffer, only if it was properly sent/processed
         //if (bulkResult.isEmpty()) {
@@ -269,32 +271,50 @@ public class RestRepository implements Closeable, StatsAware {
     }
 
 
-    public Map<Shard, Node> getReadTargetShards() {
+    public Object[] getReadTargetShards(boolean clientNodesOnly) {
         for (int retries = 0; retries < 3; retries++) {
-            Map<Shard, Node> map = doGetReadTargetShards();
-            if (map != null) {
-                return map;
+            Object[] result = doGetReadTargetShards(clientNodesOnly);
+            if (result != null) {
+                return result;
             }
         }
         throw new EsHadoopIllegalStateException("Cluster state volatile; cannot find node backing shards - please check whether your cluster is stable");
     }
 
-    protected Map<Shard, Node> doGetReadTargetShards() {
+    protected Object[] doGetReadTargetShards(boolean clientNodesOnly) {
         List<List<Map<String, Object>>> info = client.targetShards(resourceR.index());
-        Map<String, Node> nodes = client.getNodes();
+
+        // if client-nodes routing is used, allow non-http clients
+        Map<String, Node> httpNodes = client.getHttpNodes(clientNodesOnly);
+
+        if (httpNodes.isEmpty()) {
+            String msg = "No HTTP-enabled data nodes found";
+            if (!settings.getNodesClientOnly()) {
+                msg += String.format("; if you are using client-only nodes make sure to configure es-hadoop as such through [%s] property", ConfigurationOptions.ES_NODES_CLIENT_ONLY);
+            }
+            throw new EsHadoopIllegalStateException(msg);
+        }
 
         Map<Shard, Node> shards = new LinkedHashMap<Shard, Node>();
 
-        boolean globalQuery = false;
+        boolean overlappingShards = false;
 
+        Object[] result = new Object[2];
+
+        // false by default
+        result[0] = overlappingShards;
+        result[1] = shards;
+
+        // check if multiple indices are hit
         if (!isReadIndexConcrete()) {
             String message = String.format("Read resource [%s] includes multiple indices or/and aliases; to avoid duplicate results (caused by shard overlapping), parallelism ", resourceR);
 
-            Map<Shard, Node> combination = ShardSorter.find(info, nodes);
+            Map<Shard, Node> combination = ShardSorter.find(info, httpNodes, log);
             if (combination.isEmpty()) {
-                message += "was disabled";
+                message += "is minimized";
                 log.warn(message);
-                globalQuery = true;
+                overlappingShards = true;
+                result[0] = overlappingShards;
             }
             else {
                 int initialParallelism = 0;
@@ -303,37 +323,46 @@ public class RestRepository implements Closeable, StatsAware {
                 }
 
                 if (initialParallelism > combination.size()) {
-                    message += String.format("was reduced from %s to %s", initialParallelism, combination.size());
+                    message += String.format("is reduced from %s to %s", initialParallelism, combination.size());
                     log.warn(message);
                 }
-                return combination;
+                result[0] = overlappingShards;
+                result[1] = combination;
+
+                return result;
             }
         }
+
+        Set<Integer> seenShards = new LinkedHashSet<Integer>();
 
         for (List<Map<String, Object>> shardGroup : info) {
             for (Map<String, Object> shardData : shardGroup) {
                 Shard shard = new Shard(shardData);
                 if (shard.getState().isStarted()) {
-                    Node node = nodes.get(shard.getNode());
+                    Node node = httpNodes.get(shard.getNode());
                     if (node == null) {
-                        log.warn(String.format("Cannot find node with id [%s] (is HTTP enabled?) from shard [%s] in nodes [%s]; layout [%s]", shard.getNode(), shard, nodes, info));
+                        log.warn(String.format("Cannot find node with id [%s] (is HTTP enabled?) from shard [%s] in nodes [%s]; layout [%s]", shard.getNode(), shard, httpNodes, info));
                         return null;
                     }
-                    shards.put(shard, node);
-                    // if it's a global query, just use the first shard discovered
-                    if (globalQuery) {
-                        return shards;
+                    // when dealing with overlapping shards, simply keep a shard for each id/name (0, 1, ...)
+                    if (overlappingShards) {
+                        if (seenShards.add(shard.getName())) {
+                            shards.put(shard, node);
+                        }
                     }
-                    break;
+                    else {
+                        shards.put(shard, node);
+                        break;
+                    }
                 }
             }
         }
-        return shards;
+        return result;
     }
 
-    public Map<Shard, Node> getWriteTargetPrimaryShards() {
+    public Map<Shard, Node> getWriteTargetPrimaryShards(boolean clientNodesOnly) {
         for (int retries = 0; retries < 3; retries++) {
-            Map<Shard, Node> map = doGetWriteTargetPrimaryShards();
+            Map<Shard, Node> map = doGetWriteTargetPrimaryShards(clientNodesOnly);
             if (map != null) {
                 return map;
             }
@@ -341,10 +370,10 @@ public class RestRepository implements Closeable, StatsAware {
         throw new EsHadoopIllegalStateException("Cluster state volatile; cannot find node backing shards - please check whether your cluster is stable");
     }
 
-    protected Map<Shard, Node> doGetWriteTargetPrimaryShards() {
+    protected Map<Shard, Node> doGetWriteTargetPrimaryShards(boolean clientNodesOnly) {
         List<List<Map<String, Object>>> info = client.targetShards(resourceW.index());
         Map<Shard, Node> shards = new LinkedHashMap<Shard, Node>();
-        Map<String, Node> nodes = client.getNodes();
+        Map<String, Node> nodes = client.getHttpNodes(clientNodesOnly);
 
         for (List<Map<String, Object>> shardGroup : info) {
             // consider only primary shards
@@ -397,7 +426,7 @@ public class RestRepository implements Closeable, StatsAware {
     }
 
     private boolean isReadIndexConcrete() {
-		String index = resourceR.index();
+        String index = resourceR.index();
         return !(index.contains(",") || index.contains("*") || client.isAlias(resourceR.aliases()));
     }
 
@@ -407,6 +436,21 @@ public class RestRepository implements Closeable, StatsAware {
 
     public boolean touch() {
         return client.touch(resourceW.index());
+    }
+
+    public void delete() {
+        client.delete(resourceW.indexAndType());
+    }
+
+    public boolean isEmpty(boolean read) {
+        Resource res = (read ? resourceR : resourceW);
+        boolean exists = client.exists(res.indexAndType());
+        return (exists ? count(read) <= 0 : true);
+    }
+
+    public long count(boolean read) {
+        Resource res = (read ? resourceR : resourceW);
+        return client.count(res.indexAndType());
     }
 
     public boolean waitForYellow() {

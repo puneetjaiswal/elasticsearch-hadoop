@@ -29,7 +29,7 @@ public interface InternalConfigurationOptions extends ConfigurationOptions {
     // pinned node
     String INTERNAL_ES_PINNED_NODE = "es.internal.pinned.node";
 
+    String INTERNAL_ES_QUERY_FILTERS = "es.internal.query.filters";
+
     String INTERNAL_ES_VERSION = "es.internal.es.version";
-    // selector used when multiple indices are specified
-    String INTERNAL_ES_SELECTED_INDEX = "es.internal.selected.index";
 }

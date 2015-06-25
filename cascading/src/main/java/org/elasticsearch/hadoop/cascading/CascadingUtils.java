@@ -60,6 +60,7 @@ public abstract class CascadingUtils {
         Settings settings = HadoopSettingsManager.loadFrom(CascadingUtils.extractOriginalProperties(flowProperties)).merge(tapProperties);
 
         InitializationUtils.discoverNodesIfNeeded(settings, log);
+        InitializationUtils.filterNonClientNodesIfNeeded(settings, log);
         InitializationUtils.discoverEsVersion(settings, log);
 
         InitializationUtils.setValueWriterIfNotSet(settings, CascadingValueWriter.class, log);
@@ -108,7 +109,7 @@ public abstract class CascadingUtils {
     }
 
     static FieldAlias alias(Settings settings) {
-        return new FieldAlias(SettingsUtils.aliases(settings.getProperty(MAPPING_NAMES)));
+        return new FieldAlias(SettingsUtils.aliases(settings.getProperty(MAPPING_NAMES), false), false);
     }
 
     static List<String> asStrings(Fields fields) {
